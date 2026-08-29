@@ -1,0 +1,3 @@
+# Patches must stay byte-exact: git apply matches context lines literally,
+# and actions/checkout runs under a git whose system config is autocrlf=true.
+*.patch -text

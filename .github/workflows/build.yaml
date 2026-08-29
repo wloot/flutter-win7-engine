@@ -23,10 +23,12 @@ jobs:
         run: |
           # Chromium checkouts overflow MAX_PATH without this.
           git config --global core.longpaths true
-          # Windows git defaults to autocrlf=true, which checks the engine
-          # sources out with CRLF endings and makes the LF patches fail to
-          # apply. Chromium's own setup requires autocrlf=false too.
+          # Keep every engine source checkout at LF so the LF patches apply.
+          # autocrlf=false alone is not enough: ANGLE's .gitattributes says
+          # `* text=auto`, which converts on checkout by core.eol — and that
+          # defaults to native (CRLF) on Windows.
           git config --global core.autocrlf false
+          git config --global core.eol lf
           # Full clone, self-update allowed: on Windows depot_tools must
           # bootstrap its own pinned git (git_cache hardcodes git.bat), and
           # that bootstrap is part of the self-update a shallow/frozen clone

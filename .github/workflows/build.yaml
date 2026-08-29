@@ -19,6 +19,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The engine's gn toolchain setup hardcodes Windows SDK 10.0.22621
+      # (setup_toolchain.py SDK_VERSION, "to avoid accidentally building
+      # with a new and untested SDK") and the runner image ships a newer
+      # one. Install the exact SDK rather than patching the pin — the whole
+      # point of this build is staying faithful to the official toolchain.
+      - name: Install Windows SDK 10.0.22621
+        run: choco install windows-sdk-11-version-22h2-all -y --no-progress
+        timeout-minutes: 20
+
       - name: Install depot_tools
         run: |
           # Chromium checkouts overflow MAX_PATH without this.

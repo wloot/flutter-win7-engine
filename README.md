@@ -2,8 +2,9 @@
 
 Builds a Windows 7-compatible `flutter_windows.dll` for **Flutter 3.44.9**
 by patching the engine's third-party sources and rebuilding. The same DLL
-runs unchanged on Windows 10/11: every patch resolves the missing API
-dynamically and only falls back on Windows 7, so there is no separate Win7
+runs unchanged on Windows 10/11: the API patches resolve missing symbols
+dynamically and only fall back on Windows 7, rendering falls back to the
+software compositor below Windows 10, and there is no separate Win7
 artifact.
 
 Stock Flutter ≥3.13 cannot start on Windows 7 because the engine statically

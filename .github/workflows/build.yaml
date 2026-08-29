@@ -11,22 +11,17 @@ env:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Not windows-latest: that image has rolled on to VS 2026 and a newer
+    # Windows SDK, while this engine pins "VS 2022 17.4 with 10.0.22621.0
+    # SDK" (vs_toolchain.py) — windows-2022 is exactly that generation and
+    # ships SDK 22621 out of the box.
+    runs-on: windows-2022
     timeout-minutes: 360
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
-
-      # The engine's gn toolchain setup hardcodes Windows SDK 10.0.22621
-      # (setup_toolchain.py SDK_VERSION, "to avoid accidentally building
-      # with a new and untested SDK") and the runner image ships a newer
-      # one. Install the exact SDK rather than patching the pin — the whole
-      # point of this build is staying faithful to the official toolchain.
-      - name: Install Windows SDK 10.0.22621
-        run: choco install windows-sdk-11-version-22h2-all -y --no-progress
-        timeout-minutes: 20
 
       - name: Install depot_tools
         run: |

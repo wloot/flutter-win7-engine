@@ -23,12 +23,17 @@ jobs:
         run: |
           # Chromium checkouts overflow MAX_PATH without this.
           git config --global core.longpaths true
-          git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$env:GITHUB_WORKSPACE\..\depot_tools"
+          # Full clone, self-update allowed: on Windows depot_tools must
+          # bootstrap its own pinned git (git_cache hardcodes git.bat), and
+          # that bootstrap is part of the self-update a shallow/frozen clone
+          # skips — which fails later inside gclient sync with WinError 2.
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$env:GITHUB_WORKSPACE\..\depot_tools"
           Add-Content $env:GITHUB_PATH "$env:GITHUB_WORKSPACE\..\depot_tools"
           # Use the runner's preinstalled VS toolchain, not Google's internal one.
           Add-Content $env:GITHUB_ENV "DEPOT_TOOLS_WIN_TOOLCHAIN=0"
-          # A shallow depot_tools cannot self-update; freeze it instead.
-          Add-Content $env:GITHUB_ENV "DEPOT_TOOLS_UPDATE=0"
+          # Run the one-time bootstrap now so a failure surfaces here.
+          & "$env:GITHUB_WORKSPACE\..\depot_tools\gclient.bat" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Check out engine source
         run: |

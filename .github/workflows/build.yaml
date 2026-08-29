@@ -76,6 +76,9 @@ jobs:
           cd "$env:GITHUB_WORKSPACE\..\engine-root"
           git apply --verbose "$env:GITHUB_WORKSPACE\patches\flutter-0001-win7-real-warp-fallback.patch"
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          cd "$env:GITHUB_WORKSPACE\..\engine-root\engine\src\flutter\third_party\boringssl\src"
+          git apply --verbose "$env:GITHUB_WORKSPACE\patches\boringssl-0001-win7-rtlgenrandom-fallback.patch"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Build flutter_windows.dll
         run: |

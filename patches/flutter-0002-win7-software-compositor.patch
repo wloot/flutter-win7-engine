@@ -1,0 +1,58 @@
+diff --git a/engine/src/flutter/shell/platform/windows/egl/manager.cc b/engine/src/flutter/shell/platform/windows/egl/manager.cc
+index 64fb765bf54..60a078b9f12 100644
+--- a/engine/src/flutter/shell/platform/windows/egl/manager.cc
++++ b/engine/src/flutter/shell/platform/windows/egl/manager.cc
+@@ -12,9 +12,53 @@
+ namespace flutter {
+ namespace egl {
+ 
++namespace {
++// Win7 compat: the real OS version, asked of the kernel rather than of
++// VersionHelpers. IsWindows8OrGreater goes through VerifyVersionInfo, which
++// answers with the highest OS the HOST EXE's manifest claims to support — an
++// engine-side gate must not silently change behaviour because an embedder in
++// another repository edited its manifest. RtlGetVersion has no such lie in it.
++bool IsWindows7OrOlder() {
++  static const bool is_win7_or_older = [] {
++    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
++    auto* const ntdll = ::GetModuleHandleW(L"ntdll.dll");
++    if (ntdll == nullptr) {
++      return false;
++    }
++    const auto rtl_get_version = reinterpret_cast<RtlGetVersionFn>(
++        ::GetProcAddress(ntdll, "RtlGetVersion"));
++    if (rtl_get_version == nullptr) {
++      return false;
++    }
++    OSVERSIONINFOW info = {};
++    info.dwOSVersionInfoSize = sizeof(info);
++    if (rtl_get_version(&info) != 0) {
++      return false;
++    }
++    return info.dwMajorVersion < 6 ||
++           (info.dwMajorVersion == 6 && info.dwMinorVersion <= 1);
++  }();
++  return is_win7_or_older;
++}
++}  // namespace
++
+ int Manager::instance_count_ = 0;
+ 
+ std::unique_ptr<Manager> Manager::Create(GpuPreference gpu_preference) {
++  // Win7 compat: never initialize EGL/ANGLE there. A null manager sends the
++  // engine to its software compositor, the one rendering path validated
++  // end-to-end on Windows 7 — and the GPU paths on that OS are either
++  // unvalidated (real-GPU D3D11 on decade-old drivers) or carry an
++  // unrecoverable failure mode: the renderer is chosen once, at Run(), so a
++  // device loss AFTER EGL initialized has no way back to software and leaves
++  // a permanently black window that only a restart clears (observed: two
++  // presented frames, then DXGI_ERROR_DEVICE_REMOVED and 183 context-lost
++  // errors). This app is a network client, not a game — availability over
++  // acceleration, by decision. Win8+ never takes this branch and behaves
++  // exactly as unpatched.
++  if (IsWindows7OrOlder()) {
++    return nullptr;
++  }
+   std::unique_ptr<Manager> manager;
+   manager.reset(new Manager(gpu_preference));
+   if (!manager->IsValid()) {

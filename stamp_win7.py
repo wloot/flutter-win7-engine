@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Stamp the DLL's PE version floor to 6.1 (Windows 7) and fix the checksum.
 
-The engine build stamps 10.0, which makes Windows 7's loader refuse the
-DLL before any of the patched fallbacks can run. 6.1 is only a floor
-declaration - Windows 10+ ignores it.
+Informational only: a real-machine A/B (2026-08-30, same DLL restamped
+10.0 loaded fine on Win7) proved the loader checks version stamps on
+EXEs, never on DLLs. The 6.1 stamp stays because it is free and makes
+the artifact's self-described floor match what it actually supports -
+not because any loader reads it.
 """
 
 import struct

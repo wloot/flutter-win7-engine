@@ -88,8 +88,13 @@ jobs:
 
       - name: Stage artifact
         run: |
+          pip install pefile
           mkdir dist
           copy "$env:GITHUB_WORKSPACE\..\engine-root\engine\src\out\host_release\flutter_windows.dll" dist\
+          # Lower the PE version floor to 6.1 so Win7's loader accepts the
+          # DLL (see stamp_win7.py). The artifact is final-form after this.
+          python stamp_win7.py dist\flutter_windows.dll
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           # Keep the PDB: it is how crash addresses in the field get symbolized.
           copy "$env:GITHUB_WORKSPACE\..\engine-root\engine\src\out\host_release\flutter_windows.dll.pdb" dist\
 

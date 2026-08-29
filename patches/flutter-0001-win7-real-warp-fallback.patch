@@ -1,0 +1,23 @@
+diff --git a/engine/src/flutter/shell/platform/windows/egl/manager.cc b/engine/src/flutter/shell/platform/windows/egl/manager.cc
+index 64fb765..9840d48 100644
+--- a/engine/src/flutter/shell/platform/windows/egl/manager.cc
++++ b/engine/src/flutter/shell/platform/windows/egl/manager.cc
+@@ -124,9 +124,18 @@ bool Manager::InitializeDisplay(GpuPreference gpu_preference) {
+ 
+   // These attributes request D3D11 WARP (software rendering fallback) in case
+   // hardware-backed D3D11 is unavailable.
++  //
++  // Win7 compat / correctness: without an explicit device-type request ANGLE
++  // defaults to EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE, so this
++  // attempt silently repeated the hardware attempt and the WARP fallback
++  // never actually existed (verified on a machine whose WARP works while all
++  // three attempts failed identically; the bug is still present upstream in
++  // 3.47). The explicit device type below makes the fallback real.
+   const EGLint d3d11_warp_display_attributes[] = {
+       EGL_PLATFORM_ANGLE_TYPE_ANGLE,
+       EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
++      EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE,
++      EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE,
+       EGL_PLATFORM_ANGLE_ENABLE_AUTOMATIC_TRIM_ANGLE,
+       EGL_TRUE,
+       EGL_NONE,

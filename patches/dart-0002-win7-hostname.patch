@@ -1,0 +1,23 @@
+diff --git a/runtime/bin/platform_win.cc b/runtime/bin/platform_win.cc
+index 06f8f9bb7..6821340a5 100644
+--- a/runtime/bin/platform_win.cc
++++ b/runtime/bin/platform_win.cc
+@@ -317,14 +317,10 @@ bool Platform::LocalHostname(char* buffer, intptr_t buffer_length) {
+   if (!SocketBase::Initialize()) {
+     return false;
+   }
+-  // 256 is max length per https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-gethostnamew#remarks
+-  const int HOSTNAME_MAXLENGTH = 256;
+-  wchar_t hostname_w[HOSTNAME_MAXLENGTH];
+-  if (GetHostNameW(hostname_w, HOSTNAME_MAXLENGTH) != 0) {
+-    return false;
+-  }
+-  return WideCharToMultiByte(CP_UTF8, 0, hostname_w, -1, buffer, buffer_length,
+-                             nullptr, nullptr) != 0;
++  // GetHostNameW is Windows 8+; use the ANSI gethostname so this keeps
++  // working on Windows 7 (pre-35c6cc62 behavior). Non-ASCII hostnames come
++  // back in the system code page instead of UTF-8, which is acceptable here.
++  return gethostname(buffer, buffer_length) == 0;
+ #endif
+ }
+ 

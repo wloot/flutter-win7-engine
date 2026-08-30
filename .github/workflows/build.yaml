@@ -1,0 +1,101 @@
+# Builds a Windows 7-compatible flutter_windows.dll from Flutter 3.44.9
+# engine sources with the patches in patches/. Manual trigger only — an
+# engine build takes hours.
+name: build
+
+on:
+  workflow_dispatch:
+
+env:
+  FLUTTER_TAG: "3.44.9"
+
+jobs:
+  build:
+    # Not windows-latest: that image has rolled on to VS 2026 and a newer
+    # Windows SDK, while this engine pins "VS 2022 17.4 with 10.0.22621.0
+    # SDK" (vs_toolchain.py) — windows-2022 is exactly that generation and
+    # ships SDK 22621 out of the box.
+    runs-on: windows-2022
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install depot_tools
+        run: |
+          # Chromium checkouts overflow MAX_PATH without this.
+          git config --global core.longpaths true
+          # Keep every engine source checkout at LF so the LF patches apply.
+          # autocrlf=false alone is not enough: ANGLE's .gitattributes says
+          # `* text=auto`, which converts on checkout by core.eol — and that
+          # defaults to native (CRLF) on Windows.
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          # Full clone, self-update allowed: on Windows depot_tools must
+          # bootstrap its own pinned git (git_cache hardcodes git.bat), and
+          # that bootstrap is part of the self-update a shallow/frozen clone
+          # skips — which fails later inside gclient sync with WinError 2.
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$env:GITHUB_WORKSPACE\..\depot_tools"
+          Add-Content $env:GITHUB_PATH "$env:GITHUB_WORKSPACE\..\depot_tools"
+          # Use the runner's preinstalled VS toolchain, not Google's internal one.
+          Add-Content $env:GITHUB_ENV "DEPOT_TOOLS_WIN_TOOLCHAIN=0"
+          # Run the one-time bootstrap now so a failure surfaces here.
+          & "$env:GITHUB_WORKSPACE\..\depot_tools\gclient.bat" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Check out engine source
+        run: |
+          mkdir "$env:GITHUB_WORKSPACE\..\engine-root"
+          cd "$env:GITHUB_WORKSPACE\..\engine-root"
+          $spec = 'solutions = [{"managed": False, "name": ".", "url": "https://github.com/flutter/flutter.git@' + $env:FLUTTER_TAG + '", "custom_deps": {}, "deps_file": "DEPS", "safesync_url": ""}]'
+          Set-Content -Path .gclient -Value $spec
+          gclient sync --no-history -j8
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Apply Win7 patches
+        run: |
+          cd "$env:GITHUB_WORKSPACE\..\engine-root\engine\src\flutter\third_party\dart"
+          git apply --verbose "$env:GITHUB_WORKSPACE\patches\dart-0001-win7-stack-bounds.patch"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          git apply --verbose "$env:GITHUB_WORKSPACE\patches\dart-0002-win7-hostname.patch"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          git apply --verbose "$env:GITHUB_WORKSPACE\patches\dart-0003-win7-unwinding-records.patch"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          git apply --verbose "$env:GITHUB_WORKSPACE\patches\dart-0004-win7-pathcch.patch"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cd "$env:GITHUB_WORKSPACE\..\engine-root\engine\src\flutter\third_party\angle"
+          git apply --verbose "$env:GITHUB_WORKSPACE\patches\angle-0001-win7-no-futex.patch"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build flutter_windows.dll
+        run: |
+          cd "$env:GITHUB_WORKSPACE\..\engine-root\engine\src"
+          python .\flutter\tools\gn --runtime-mode=release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          ninja -C .\out\host_release flutter/shell/platform/windows:flutter_windows
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # The whole point of the exercise: no statically-imported Win8+ API may
+      # remain. Also guards against the runner's VS toolchain introducing
+      # imports the official artifact didn't have.
+      - name: Verify no Win8+ imports remain
+        run: |
+          pip install "lief>=0.14"
+          python check_imports.py "$env:GITHUB_WORKSPACE\..\engine-root\engine\src\out\host_release\flutter_windows.dll"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Stage artifact
+        run: |
+          mkdir dist
+          copy "$env:GITHUB_WORKSPACE\..\engine-root\engine\src\out\host_release\flutter_windows.dll" dist\
+          # Keep the PDB: it is how crash addresses in the field get symbolized.
+          copy "$env:GITHUB_WORKSPACE\..\engine-root\engine\src\out\host_release\flutter_windows.dll.pdb" dist\
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flutter_windows-win7-${{ env.FLUTTER_TAG }}
+          path: dist/
+          retention-days: 90
+          if-no-files-found: error

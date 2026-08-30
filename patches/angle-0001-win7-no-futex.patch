@@ -1,0 +1,15 @@
+diff --git a/src/common/SimpleMutex.h b/src/common/SimpleMutex.h
+index 84ffa1a..edd7548 100644
+--- a/src/common/SimpleMutex.h
++++ b/src/common/SimpleMutex.h
+@@ -31,6 +31,10 @@
+ // - Linux and derivatives (Android, ChromeOS, etc)
+ // - Windows 8+
+ //
++// Win7 compat: force the std::mutex path on Windows so the engine keeps
++// running on Windows 7 (WaitOnAddress/WakeByAddressSingle are Win8+).
++#define ANGLE_WINDOWS_NO_FUTEX 1
++
+ // There is no TSAN support for futex currently, so it is disabled in that case
+ #if !defined(ANGLE_WITH_TSAN)
+ #    if defined(ANGLE_PLATFORM_LINUX) || defined(ANGLE_PLATFORM_ANDROID)

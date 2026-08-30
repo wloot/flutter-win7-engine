@@ -1,0 +1,275 @@
+diff --git a/runtime/bin/file_win.cc b/runtime/bin/file_win.cc
+index 009a0a53d..a91749b5b 100644
+--- a/runtime/bin/file_win.cc
++++ b/runtime/bin/file_win.cc
+@@ -36,6 +36,243 @@
+ namespace dart {
+ namespace bin {
+ 
++// The PathCch family (PathAllocCanonicalize, PathCchCombineEx,
++// PathCchRemoveFileSpec) is only available on Windows 8+. Resolve it lazily
++// and fall back to plain string handling on Windows 7. The fallbacks lean on
++// two facts about the call sites below: every input path is absolute and
++// backslash-normalized (produced via GetFullPathNameW), so canonicalization
++// only needs to add the '\\?\' prefix, and dot-segment collapsing can be
++// delegated to GetFullPathNameW.
++namespace {
++
++typedef HRESULT(WINAPI* PathAllocCanonicalizeFn)(PCWSTR path_in,
++                                                 ULONG flags,
++                                                 PWSTR* path_out);
++typedef HRESULT(WINAPI* PathCchCombineExFn)(PWSTR path_out,
++                                            size_t path_out_size,
++                                            PCWSTR path_in,
++                                            PCWSTR more,
++                                            ULONG flags);
++typedef HRESULT(WINAPI* PathCchRemoveFileSpecFn)(PWSTR path, size_t path_size);
++
++struct PathCchApi {
++  PathAllocCanonicalizeFn alloc_canonicalize;
++  PathCchCombineExFn combine_ex;
++  PathCchRemoveFileSpecFn remove_file_spec;
++};
++
++const PathCchApi& GetPathCchApi() {
++  static PathCchApi api = []() {
++    PathCchApi result = {nullptr, nullptr, nullptr};
++    // The PathCch functions live in KernelBase.dll (behind the
++    // api-ms-win-core-path apiset). KernelBase.dll exists on Windows 7 too,
++    // it just lacks these exports.
++    HMODULE kernel_base = GetModuleHandleW(L"KernelBase.dll");
++    if (kernel_base != nullptr) {
++      result.alloc_canonicalize = reinterpret_cast<PathAllocCanonicalizeFn>(
++          GetProcAddress(kernel_base, "PathAllocCanonicalize"));
++      result.combine_ex = reinterpret_cast<PathCchCombineExFn>(
++          GetProcAddress(kernel_base, "PathCchCombineEx"));
++      result.remove_file_spec = reinterpret_cast<PathCchRemoveFileSpecFn>(
++          GetProcAddress(kernel_base, "PathCchRemoveFileSpec"));
++    }
++    // All or nothing, so the fallbacks below stay consistent with each other.
++    if ((result.alloc_canonicalize == nullptr) ||
++        (result.combine_ex == nullptr) ||
++        (result.remove_file_spec == nullptr)) {
++      result.alloc_canonicalize = nullptr;
++      result.combine_ex = nullptr;
++      result.remove_file_spec = nullptr;
++    }
++    return result;
++  }();
++  return api;
++}
++
++const wchar_t* const kExtendedPrefix = L"\\\\?\\";
++const size_t kExtendedPrefixLength = 4;
++const wchar_t* const kExtendedUncPrefix = L"\\\\?\\UNC\\";
++const size_t kExtendedUncPrefixLength = 8;
++
++// Number of leading characters that form the root of the path (the part
++// that PathCchRemoveFileSpec must never remove), e.g. 7 for "\\?\C:\x",
++// 3 for "C:\x", server+share for UNC forms.
++size_t PathRootLength(PCWSTR path) {
++  const wchar_t* rest = path;
++  bool unc = false;
++  if (wcsncmp(rest, kExtendedUncPrefix, kExtendedUncPrefixLength) == 0) {
++    rest += kExtendedUncPrefixLength;
++    unc = true;
++  } else if (wcsncmp(rest, kExtendedPrefix, kExtendedPrefixLength) == 0) {
++    rest += kExtendedPrefixLength;
++  } else if ((rest[0] == L'\\') && (rest[1] == L'\\')) {
++    rest += 2;
++    unc = true;
++  }
++  if (unc) {
++    // Skip over server\share(\).
++    int separators = 0;
++    while ((*rest != L'\0') && (separators < 2)) {
++      if (*rest == L'\\') separators++;
++      rest++;
++    }
++    return rest - path;
++  }
++  if ((((rest[0] >= L'a') && (rest[0] <= L'z')) ||
++       ((rest[0] >= L'A') && (rest[0] <= L'Z'))) &&
++      (rest[1] == L':')) {
++    rest += 2;
++  }
++  if (*rest == L'\\') rest++;
++  return rest - path;
++}
++
++HRESULT PathCchRemoveFileSpecFallback(PWSTR path, size_t path_size) {
++  USE(path_size);
++  size_t root_length = PathRootLength(path);
++  size_t length = wcslen(path);
++  if (length <= root_length) {
++    return S_FALSE;  // Only the root is left, nothing to remove.
++  }
++  // Cut at the last backslash past the root, or directly past the root when
++  // the last remaining element has no leading backslash (e.g. "C:\foo").
++  size_t cut = root_length;
++  for (size_t i = length; i > root_length; i--) {
++    if (path[i - 1] == L'\\') {
++      cut = i - 1;
++      break;
++    }
++  }
++  path[cut] = L'\0';
++  return S_OK;
++}
++
++HRESULT PathAllocCanonicalizeFallback(PCWSTR path_in, PWSTR* path_out) {
++  // The input is absolute and already canonicalized by GetFullPathNameW;
++  // only the extended-length prefix still needs to be added.
++  const wchar_t* prefix = L"";
++  const wchar_t* body = path_in;
++  if (wcsncmp(path_in, kExtendedPrefix, kExtendedPrefixLength) == 0) {
++    // Already in extended-length form (including "\\?\UNC\").
++  } else if ((path_in[0] == L'\\') && (path_in[1] == L'\\')) {
++    prefix = kExtendedUncPrefix;
++    body = path_in + 2;
++  } else {
++    prefix = kExtendedPrefix;
++  }
++  size_t result_size = wcslen(prefix) + wcslen(body) + 1;
++  PWSTR result = static_cast<PWSTR>(
++      LocalAlloc(LMEM_FIXED, result_size * sizeof(wchar_t)));
++  if (result == nullptr) {
++    return E_OUTOFMEMORY;
++  }
++  wcscpy_s(result, result_size, prefix);
++  wcscat_s(result, result_size, body);
++  *path_out = result;
++  return S_OK;
++}
++
++HRESULT PathCchCombineExFallback(PWSTR path_out,
++                                 size_t path_out_size,
++                                 PCWSTR path_in,
++                                 PCWSTR more) {
++  // Called with an absolute base and a relative tail. Join them, then let
++  // GetFullPathNameW collapse '.' and '..' segments. GetFullPathNameW does
++  // not normalize '\\?\'-prefixed paths, so the prefix is stripped first
++  // and restored afterwards.
++  bool extended = false;
++  bool extended_unc = false;
++  std::unique_ptr<wchar_t[]> base;
++  if (wcsncmp(path_in, kExtendedUncPrefix, kExtendedUncPrefixLength) == 0) {
++    extended_unc = true;
++    size_t base_size = wcslen(path_in);  // "\\" + body fits in this.
++    base = std::make_unique<wchar_t[]>(base_size + 1);
++    wcscpy_s(base.get(), base_size + 1, L"\\\\");
++    wcscat_s(base.get(), base_size + 1, path_in + kExtendedUncPrefixLength);
++  } else if (wcsncmp(path_in, kExtendedPrefix, kExtendedPrefixLength) == 0) {
++    extended = true;
++    size_t base_size = wcslen(path_in + kExtendedPrefixLength) + 1;
++    base = std::make_unique<wchar_t[]>(base_size);
++    wcscpy_s(base.get(), base_size, path_in + kExtendedPrefixLength);
++  } else {
++    size_t base_size = wcslen(path_in) + 1;
++    base = std::make_unique<wchar_t[]>(base_size);
++    wcscpy_s(base.get(), base_size, path_in);
++  }
++
++  size_t joined_size = wcslen(base.get()) + wcslen(more) + 2;
++  auto joined = std::make_unique<wchar_t[]>(joined_size);
++  wcscpy_s(joined.get(), joined_size, base.get());
++  size_t base_length = wcslen(joined.get());
++  if ((base_length > 0) && (joined[base_length - 1] != L'\\')) {
++    wcscat_s(joined.get(), joined_size, L"\\");
++  }
++  wcscat_s(joined.get(), joined_size, more);
++
++  int buffer_size = 1024;
++  do {
++    auto buffer = std::make_unique<wchar_t[]>(buffer_size);
++    int full_path_length = GetFullPathNameW(joined.get(), buffer_size,
++                                            buffer.get(),
++                                            /*lpFilePart=*/nullptr);
++    if (full_path_length == 0) {
++      return HRESULT_FROM_WIN32(GetLastError());
++    }
++    if (full_path_length < buffer_size) {
++      const wchar_t* prefix = L"";
++      const wchar_t* body = buffer.get();
++      if (extended_unc) {
++        prefix = kExtendedUncPrefix;
++        body += 2;  // Skip the leading "\\".
++      } else if (extended) {
++        prefix = kExtendedPrefix;
++      }
++      if (wcslen(prefix) + wcslen(body) + 1 > path_out_size) {
++        return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
++      }
++      wcscpy_s(path_out, path_out_size, prefix);
++      wcscat_s(path_out, path_out_size, body);
++      return S_OK;
++    }
++    buffer_size = full_path_length;
++  } while (true);
++}
++
++HRESULT PathAllocCanonicalizeCompat(PCWSTR path_in,
++                                    ULONG flags,
++                                    PWSTR* path_out) {
++  auto api_function = GetPathCchApi().alloc_canonicalize;
++  if (api_function != nullptr) {
++    return api_function(path_in, flags, path_out);
++  }
++  // The fallback only implements what the single call site below asks for.
++  ASSERT(flags == PATHCCH_ENSURE_IS_EXTENDED_LENGTH_PATH);
++  return PathAllocCanonicalizeFallback(path_in, path_out);
++}
++
++HRESULT PathCchCombineExCompat(PWSTR path_out,
++                               size_t path_out_size,
++                               PCWSTR path_in,
++                               PCWSTR more,
++                               ULONG flags) {
++  auto api_function = GetPathCchApi().combine_ex;
++  if (api_function != nullptr) {
++    return api_function(path_out, path_out_size, path_in, more, flags);
++  }
++  ASSERT(flags == PATHCCH_ALLOW_LONG_PATHS);
++  return PathCchCombineExFallback(path_out, path_out_size, path_in, more);
++}
++
++HRESULT PathCchRemoveFileSpecCompat(PWSTR path, size_t path_size) {
++  auto api_function = GetPathCchApi().remove_file_spec;
++  if (api_function != nullptr) {
++    return api_function(path, path_size);
++  }
++  return PathCchRemoveFileSpecFallback(path, path_size);
++}
++
++}  // namespace
++
+ class FileHandle {
+  public:
+   explicit FileHandle(int fd) : fd_(fd) {}
+@@ -400,7 +637,7 @@ std::unique_ptr<wchar_t[]> ToWinAPIPath(const char* utf8_path) {
+   }
+ 
+   PWSTR canonical_path;
+-  if (PathAllocCanonicalize(abs_path.get(),
++  if (PathAllocCanonicalizeCompat(abs_path.get(),
+                             PATHCCH_ENSURE_IS_EXTENDED_LENGTH_PATH,
+                             &canonical_path) != S_OK) {
+     return std::unique_ptr<wchar_t[]>(nullptr);
+@@ -600,7 +837,7 @@ bool File::CreateLink(Namespace* namespc,
+ 
+     // 2. target_path := remove_file(target_path)
+     HRESULT remove_result =
+-        PathCchRemoveFileSpec(target_path.get(), target_path_max_length);
++        PathCchRemoveFileSpecCompat(target_path.get(), target_path_max_length);
+     if (remove_result == S_FALSE) {
+       // If the file component could not be removed, then `name` is
+       // top-level, like "C:\" or "/". Attempts to create files at those paths
+@@ -613,7 +850,7 @@ bool File::CreateLink(Namespace* namespc,
+     }
+ 
+     // 3. target_path := combine(target_path, target)
+-    HRESULT combine_result = PathCchCombineEx(
++    HRESULT combine_result = PathCchCombineExCompat(
+         target_path.get(), target_path_max_length, target_path.get(),
+         target.get(), PATHCCH_ALLOW_LONG_PATHS);
+     if (combine_result != S_OK) {
